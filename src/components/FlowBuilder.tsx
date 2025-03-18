@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, ArrowDown, ArrowUp, ChevronRight } from 'lucide-react';
+import { X, ChevronRight } from 'lucide-react';
 
 // Типы блоков
-type BlockType = 'Action' | 'Table' | 'Switch' | 'Start' | 'End' | 'SwitchEnd';
+type BlockType = 'Action' | 'Table' | 'Switch' | 'Start' | 'End' | 'SwitchEnd' | 'SubFlow';
 
 // Интерфейс для блока
 interface Block {
@@ -14,6 +14,10 @@ interface Block {
     top: string | null;
     bottom: string[];
   };
+  // Свойства для SubFlow блока
+  children?: string[]; // ID дочерних блоков
+  collapsed?: boolean; // Состояние сворачивания
+  originalHeight?: number; // Исходная высота для сохранения при сворачивании
 }
 
 // Интерфейс для соединения
@@ -175,6 +179,17 @@ const FlowBuilder = () => {
     }
     else {
       // Для обычных блоков просто удаляем соединения и сам блок
+
+      // Очищаем соединение в блоках, чтобы при удалении потом можно было снова делать подключения
+      setBlocks(blocks.map(block => {
+        if (block.connections.top?.includes(id)) {
+          block.connections.top = null;
+        }else if (block.connections.bottom?.includes(id)) {
+          block.connections.bottom = [];
+        }
+        return block;
+      }))
+
       // Удаляем все соединения, связанные с этим блоком
       setConnections(connections.filter(conn =>
           conn.from.id !== id && conn.to.id !== id
@@ -401,7 +416,7 @@ const FlowBuilder = () => {
     }
 
     let updatedBlocks = [...blocks];
-    let updatedConnections = [...connections];
+    const updatedConnections = [...connections];
     let connectionCreated = false;
 
     // Только при отпускании проверяем возможность соединения
@@ -720,6 +735,8 @@ const FlowBuilder = () => {
         return 'bg-yellow-100 border-yellow-200';
       case 'End':
         return 'bg-red-100 border-red-200';
+      case 'SubFlow':
+        return 'bg-blue-100 border-blue-300';
       default:
         return 'bg-gray-100 border-gray-200';
     }
@@ -740,6 +757,7 @@ const FlowBuilder = () => {
               <option value="Switch">Switch</option>
               <option value="Start">Start</option>
               <option value="End">End</option>
+              <option value="SubFlow">SubFlow</option>
             </select>
             <button
                 className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
