@@ -318,7 +318,7 @@ const FlowBuilder = () => {
 
     // Уменьшаем порог отсоединения для более чёткого разъединения блоков
     // Используем вертикальное расстояние для определения отсоединения
-    const disconnectThreshold = 15; // Порог расстояния для отсоединения блока (уменьшен для более быстрого отсоединения)
+    const disconnectThreshold = 15; // Порог расстояния для отсоединения блока
 
     // Если блок имеет соединение сверху (и это не связка Switch-SwitchEnd)
     if (hasTopConnection) {
@@ -326,10 +326,12 @@ const FlowBuilder = () => {
       const parentBlock = updatedBlocks.find(b => b.id === parentBlockId);
 
       if (parentBlock) {
-        // Не отсоединяем SwitchEnd от его Switch
+        // Не отсоединяем SwitchEnd от его Switch или блоки от Switch
         const isSwitchEndPair = parentBlock.title.startsWith('Switch') && currentBlock.title.startsWith('SwitchEnd');
+        const isConnectedToSwitch = parentBlock.type === 'Switch';
 
-        if (!isSwitchEndPair) {
+        // Изменяем условие: не отсоединять если это Switch или пара Switch-SwitchEnd
+        if (!isSwitchEndPair && !isConnectedToSwitch) {
           // Проверяем вертикальное расстояние между соединёнными блоками
           const parentBottom = parentBlock.position.y + 80; // Нижняя точка родительского блока
           const childTop = newY; // Верхняя точка дочернего блока (новая позиция)
@@ -660,6 +662,48 @@ const FlowBuilder = () => {
     }
   };
 
+  // Удаление соединения по нажатию на крестик
+  const handleRemoveConnection = (connectionIndex: number) => {
+    const connection = connections[connectionIndex];
+    if (!connection) return;
+
+    // Получаем блоки, связанные с этим соединением
+    const fromBlock = blocks.find(b => b.id === connection.from.id);
+    const toBlock = blocks.find(b => b.id === connection.to.id);
+
+    if (!fromBlock || !toBlock) return;
+
+    // Обновляем связи в блоках
+    const updatedBlocks = blocks.map(block => {
+      if (block.id === fromBlock.id) {
+        // Удаляем связь из исходного блока
+        return {
+          ...block,
+          connections: {
+            ...block.connections,
+            bottom: block.connections.bottom.filter(id => id !== toBlock.id)
+          }
+        };
+      } else if (block.id === toBlock.id) {
+        // Удаляем связь из целевого блока
+        return {
+          ...block,
+          connections: {
+            ...block.connections,
+            top: null
+          }
+        };
+      }
+      return block;
+    });
+
+    // Удаляем соединение из списка соединений
+    const updatedConnections = connections.filter((_, index) => index !== connectionIndex);
+
+    setBlocks(updatedBlocks);
+    setConnections(updatedConnections);
+  };
+
   // Добавляем обработчики событий
   useEffect(() => {
     if (draggedBlock) {
@@ -675,7 +719,7 @@ const FlowBuilder = () => {
 
   // Расчет координат для отрисовки линий соединений
   const getConnectorCoordinates = (block: Block, point: 'top' | 'bottom') => {
-    const x = block.position.x + 50; // середина блока по горизонтали
+    const x = block.position.x + 100; // середина блока по горизонтали
     const y = point === 'top'
         ? block.position.y
         : block.position.y + 80; // верх или низ блока
@@ -698,6 +742,7 @@ const FlowBuilder = () => {
 
         // Вычисляем середину для создания плавной кривой
         const midY = (fromCoord.y + toCoord.y) / 2;
+        const midX = (fromCoord.x + toCoord.x) / 2;
 
         const pathData = `
           M ${fromCoord.x} ${fromCoord.y}
@@ -705,14 +750,31 @@ const FlowBuilder = () => {
         `;
 
         return (
-            <path
-                key={`conn-${index}`}
-                d={pathData}
-                stroke="#333"
-                strokeWidth="2"
-                fill="none"
-                markerEnd="url(#arrowhead)"
-            />
+            <g key={`conn-${index}`}>
+              <path
+                  d={pathData}
+                  stroke="#333"
+                  strokeWidth="2"
+                  fill="none"
+                  markerEnd="url(#arrowhead)"
+              />
+
+              {/* Крестик для удаления соединения */}
+              <foreignObject
+                  x={midX - 10}
+                  y={midY - 10}
+                  width="20"
+                  height="20"
+                  className="pointer-events-auto"
+              >
+                <div
+                    className="w-5 h-5 rounded-full bg-red-500 flex items-center justify-center cursor-pointer"
+                    onClick={() => handleRemoveConnection(index)}
+                >
+                  <X size={12} className="text-white" />
+                </div>
+              </foreignObject>
+            </g>
         );
       }
 
@@ -779,6 +841,7 @@ const FlowBuilder = () => {
                 <p>• Each Switch has a paired SwitchEnd that moves together with it</p>
                 <p>• SwitchEnd can have connections below it</p>
                 <p>• For Switch block: click on the <strong>bottom connector</strong> of Switch (it will turn blue), then click on <strong>any block</strong> you want to connect</p>
+                <p>• Click on the <strong>red X button</strong> on a connection line to remove it</p>
               </div>
           )}
         </div>
@@ -872,7 +935,7 @@ const FlowBuilder = () => {
                   {(block.type !== 'End' || block.title.startsWith('SwitchEnd')) && (
                       <div className="relative">
                         <div
-                            className={`absolute -bottom-3 left-4 w-20 h-3 bg-white border-l-2 border-r-2 border-b-2 border-cyan-300
+                            className={`absolute -bottom-0 rotate-180 left-4 w-20 h-3 bg-white border-l-2 border-r-2 border-b-2 border-cyan-300
                       ${connecting && connecting.blockId !== block.id ? 'animate-pulse' : ''}
                       ${connecting && connecting.blockId === block.id && connecting.point === 'bottom' ? 'bg-blue-100' : ''}
                     `}
