@@ -18,6 +18,7 @@ interface Block {
   children?: string[]; // ID дочерних блоков
   collapsed?: boolean; // Состояние сворачивания
   originalHeight?: number; // Исходная высота для сохранения при сворачивании
+  zIndex: number; // Добавляем z-index для управления наложением блоков
 }
 
 // Интерфейс для соединения
@@ -33,6 +34,7 @@ const FlowBuilder = () => {
   const [selectedBlockType, setSelectedBlockType] = useState<BlockType>('Action');
   const [connecting, setConnecting] = useState<{ blockId: string; point: 'top' | 'bottom' } | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const [nextZIndex, setNextZIndex] = useState<number>(1); // Отслеживаем следующий z-index
 
   // Отслеживаем счетчик для нумерации Switch блоков
   const [switchCounter, setSwitchCounter] = useState<number>(1);
@@ -40,10 +42,18 @@ const FlowBuilder = () => {
   // Состояние для отображения/скрытия подсказок
   const [showHints, setShowHints] = useState<boolean>(false);
 
+  // Получение нового значения z-index и инкремент счетчика
+  const getNextZIndex = () => {
+    const currentZIndex = nextZIndex;
+    setNextZIndex(currentZIndex + 1);
+    return currentZIndex;
+  };
+
   // Создание нового блока
   const addBlock = () => {
     const id = `block-${Date.now()}`;
     let title = getBlockTitle(selectedBlockType);
+    const currentZIndex = getNextZIndex();
 
     // Если это Switch, добавляем номер
     if (selectedBlockType === 'Switch') {
@@ -59,6 +69,7 @@ const FlowBuilder = () => {
           top: id, // Соединяем с блоком Switch
           bottom: [], // У Switch End может быть нижний коннектор
         },
+        zIndex: currentZIndex + 1, // End будет выше чем Switch
       };
 
       // Создаем блок Switch
@@ -71,6 +82,7 @@ const FlowBuilder = () => {
           top: null,
           bottom: [switchEndId], // Соединяем с SwitchEnd
         },
+        zIndex: currentZIndex,
       };
 
       // Добавляем оба блока
@@ -87,6 +99,9 @@ const FlowBuilder = () => {
 
       // Увеличиваем счетчик Switch
       setSwitchCounter(prev => prev + 1);
+
+      // Увеличиваем z-index ещё раз (для следующего блока)
+      setNextZIndex(currentZIndex + 2);
     } else {
       // Для обычных блоков - стандартное создание
       const newBlock: Block = {
@@ -98,6 +113,7 @@ const FlowBuilder = () => {
           top: null,
           bottom: [],
         },
+        zIndex: currentZIndex,
       };
 
       // Добавляем только один блок
@@ -216,6 +232,9 @@ const FlowBuilder = () => {
         // Соединяем Switch с выбранным блоком
         // Проверяем, что у целевого блока нет соединения сверху
         if (block.connections.top === null) {
+          // Целевой блок должен иметь z-index выше, чем родительский блок
+          const newZIndex = Math.max(sourceBlock.zIndex + 1, block.zIndex);
+
           // Обновляем соединения в блоках
           setBlocks(blocks.map(b => {
             if (b.id === sourceBlock.id) {
@@ -228,13 +247,14 @@ const FlowBuilder = () => {
                 }
               };
             } else if (b.id === block.id) {
-              // Обновляем Target блок
+              // Обновляем Target блок и увеличиваем его zIndex
               return {
                 ...b,
                 connections: {
                   ...b.connections,
                   top: sourceBlock.id
-                }
+                },
+                zIndex: newZIndex
               };
             }
             return b;
@@ -254,6 +274,14 @@ const FlowBuilder = () => {
         return;
       }
     }
+
+    // Поднимаем z-index блока при начале перетаскивания
+    setBlocks(blocks.map(b => {
+      if (b.id === id) {
+        return { ...b, zIndex: 1000 }; // Высокий z-index для активного блока
+      }
+      return b;
+    }));
 
     const rect = canvasRef.current.getBoundingClientRect();
     const offsetX = e.clientX - rect.left - block.position.x;
@@ -461,6 +489,9 @@ const FlowBuilder = () => {
             // Получаем все блоки, подключенные снизу
             const connectedBlocks = getConnectedBlocksBelow(currentBlock.id);
 
+            // Устанавливаем z-index для текущего блока выше, чем у родительского
+            const newZIndex = Math.max(targetBlock.zIndex + 1, currentBlock.zIndex);
+
             // Обновляем все блоки: текущий и все связанные снизу
             updatedBlocks = updatedBlocks.map(block => {
               if (block.id === currentBlock.id) {
@@ -471,16 +502,19 @@ const FlowBuilder = () => {
                   connections: {
                     ...block.connections,
                     top: targetBlock.id
-                  }
+                  },
+                  zIndex: newZIndex
                 };
               } else if (connectedBlocks.includes(block.id)) {
                 // Обновляем все связанные блоки снизу на то же смещение
+                // Также увеличиваем их z-index относительно текущего блока
                 return {
                   ...block,
                   position: {
                     x: block.position.x + deltaX,
                     y: block.position.y + deltaY
-                  }
+                  },
+                  zIndex: newZIndex + 1 + connectedBlocks.indexOf(block.id)
                 };
               } else if (block.id === targetBlock.id) {
                 // Обновляем целевой блок (верхний)
@@ -543,6 +577,9 @@ const FlowBuilder = () => {
             // Получаем все блоки, подключенные снизу целевого блока
             const connectedBlocks = getConnectedBlocksBelow(targetBlock.id);
 
+            // Устанавливаем z-index для целевого блока выше, чем у текущего
+            const newZIndex = Math.max(currentBlock.zIndex + 1, targetBlock.zIndex);
+
             // Обновляем все блоки: целевой и все связанные с ним снизу
             updatedBlocks = updatedBlocks.map(block => {
               if (block.id === targetBlock.id) {
@@ -553,16 +590,19 @@ const FlowBuilder = () => {
                   connections: {
                     ...block.connections,
                     top: currentBlock.id
-                  }
+                  },
+                  zIndex: newZIndex
                 };
               } else if (connectedBlocks.includes(block.id)) {
                 // Обновляем все связанные блоки снизу целевого на то же смещение
+                // Также увеличиваем их z-index
                 return {
                   ...block,
                   position: {
                     x: block.position.x + deltaX,
                     y: block.position.y + deltaY
-                  }
+                  },
+                  zIndex: newZIndex + 1 + connectedBlocks.indexOf(block.id)
                 };
               } else if (block.id === currentBlock.id) {
                 // Обновляем текущий блок (верхний)
@@ -587,6 +627,19 @@ const FlowBuilder = () => {
           }
         }
       }
+    }
+
+    // Восстанавливаем нормальный z-index для перетаскиваемого блока, если не было создано соединение
+    if (!connectionCreated) {
+      updatedBlocks = updatedBlocks.map(block => {
+        if (block.id === currentBlock.id && block.zIndex === 1000) {
+          // Восстанавливаем предыдущий z-index или устанавливаем новый высокий,
+          // но не такой высокий как при перетаскивании
+          const prevZIndex = getNextZIndex();
+          return { ...block, zIndex: prevZIndex };
+        }
+        return block;
+      });
     }
 
     setBlocks(updatedBlocks);
@@ -618,6 +671,9 @@ const FlowBuilder = () => {
 
         // Проверяем, что у целевого блока нет соединения сверху
         if (targetBlock.connections.top === null) {
+          // Устанавливаем z-index целевого блока выше, чем у Switch
+          const newZIndex = Math.max(sourceBlock.zIndex + 1, targetBlock.zIndex);
+
           // Обновляем соединения в блоках
           setBlocks(blocks.map(block => {
             if (block.id === sourceBlock.id) {
@@ -630,13 +686,14 @@ const FlowBuilder = () => {
                 }
               };
             } else if (block.id === targetBlock.id) {
-              // Обновляем Target блок
+              // Обновляем Target блок и его z-index
               return {
                 ...block,
                 connections: {
                   ...block.connections,
                   top: sourceBlock.id
-                }
+                },
+                zIndex: newZIndex
               };
             }
             return block;
@@ -875,6 +932,7 @@ const FlowBuilder = () => {
                     top: `${block.position.y}px`,
                     width: '200px',
                     height: '80px',
+                    zIndex: block.zIndex, // Используем z-index из состояния блока
                   }}
                   onMouseDown={(e) => {
                     // Не начинаем перетаскивание, если клик был по кнопке удаления
