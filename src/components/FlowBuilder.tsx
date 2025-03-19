@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, ChevronRight, Maximize2 } from 'lucide-react';
+import { X, ChevronRight, Maximize2, Database } from 'lucide-react';
 
-// Типы блоков
-type BlockType = 'Action' | 'Table' | 'Switch' | 'Start' | 'End' | 'SwitchEnd' | 'Flow';
+// Типы блоков - добавляем Collection
+type BlockType = 'Action' | 'Table' | 'Switch' | 'Start' | 'End' | 'SwitchEnd' | 'Flow' | 'Collection' | 'CollectionEnd';
 
 // Интерфейс для блока
 interface Block {
@@ -21,9 +21,13 @@ interface Block {
   parentFlow?: string | null; // ID родительского Flow блока, если этот блок находится внутри Flow
   zIndex: number; // Z-index для управления наложением блоков
 
-  // Дополнительные свойства для Flow
+  // Дополнительные свойства для Flow и Collection
   width?: number;
   height?: number;
+
+  // Свойство для определения пары Collection/CollectionEnd
+  pairedWithId?: string; // ID блока, с которым связан данный блок (для пары Collection-CollectionEnd)
+  internalBlocks?: string[]; // ID блоков внутри Collection (между Collection и CollectionEnd)
 }
 
 // Интерфейс для соединения
@@ -36,7 +40,9 @@ const FLOW_PADDING = 40; // Отступ внутри Flow
 const FLOW_MIN_HEIGHT = 300; // Минимальная высота Flow
 const FLOW_MIN_WIDTH = 400; // Минимальная ширина Flow
 const BLOCK_HEIGHT = 80; // Высота блока
+const COLLECTION_BLOCK_HEIGHT = 40; // Высота блока Collection
 const BLOCK_SPACING = 20; // Расстояние между блоками
+const COLLECTION_DEFAULT_GAP = 2 * BLOCK_HEIGHT; // Стандартное расстояние между Collection и CollectionEnd
 
 // Добавляем CSS переменные для эффектов
 const styleSheet = document.createElement('style');
@@ -64,6 +70,8 @@ const FlowBuilder = () => {
   const [switchCounter, setSwitchCounter] = useState<number>(1);
   // Счетчик для Flow блоков
   const [flowCounter, setFlowCounter] = useState<number>(1);
+  // Счетчик для Collection блоков
+  const [collectionCounter, setCollectionCounter] = useState<number>(1);
 
   // Состояние для отображения/скрытия подсказок
   const [showHints, setShowHints] = useState<boolean>(false);
@@ -113,6 +121,161 @@ const FlowBuilder = () => {
     return currentZIndex;
   };
 
+  // Обновление позиции CollectionEnd блока в зависимости от внутренних блоков
+  const updateCollectionEndPosition = (collectionId: string) => {
+    const collectionBlock = blocks.find(b => b.id === collectionId && b.type === 'Collection');
+    if (!collectionBlock || !collectionBlock.pairedWithId) return;
+
+    const collectionEndId = collectionBlock.pairedWithId;
+    const collectionEndBlock = blocks.find(b => b.id === collectionEndId);
+    if (!collectionEndBlock) return;
+
+    // Получаем все присоединенные к Collection блоки (через соединения)
+    const connectedBlocks: string[] = [];
+    collectionBlock.connections.bottom.forEach(blockId => {
+      if (blockId !== collectionEndId) {
+        connectedBlocks.push(blockId);
+        // Также добавляем все блоки, соединенные с этим блоком
+        const additionalBlocks = getConnectedBlocksBelow(blockId);
+        connectedBlocks.push(...additionalBlocks);
+      }
+    });
+
+    // Рассчитываем новую позицию для CollectionEnd
+    let newYPosition;
+
+    if (connectedBlocks.length === 0) {
+      // Если присоединенных блоков нет, устанавливаем стандартное расстояние
+      newYPosition = collectionBlock.position.y + COLLECTION_DEFAULT_GAP;
+    } else {
+      // Находим самый нижний блок среди присоединенных
+      let maxBottom = collectionBlock.position.y + COLLECTION_BLOCK_HEIGHT;
+
+      connectedBlocks.forEach(blockId => {
+        const block = blocks.find(b => b.id === blockId);
+        if (block) {
+          const blockPosition = getAbsolutePosition(block);
+          const blockHeight = (block.type === 'Collection' || block.type === 'CollectionEnd')
+              ? COLLECTION_BLOCK_HEIGHT
+              : BLOCK_HEIGHT;
+          const blockBottom = blockPosition.y + blockHeight;
+          if (blockBottom > maxBottom) {
+            maxBottom = blockBottom;
+          }
+        }
+      });
+
+      // Добавляем отступ высотой в один блок после последнего блока
+      // Используем высоту блока (BLOCK_HEIGHT) плюс небольшой дополнительный отступ
+      newYPosition = maxBottom + BLOCK_HEIGHT + 10;
+    }
+
+    // Обновляем позицию CollectionEnd блока
+    setBlocks(prev => prev.map(block => {
+      if (block.id === collectionEndId) {
+        return {
+          ...block,
+          position: {
+            ...block.position,
+            x: collectionBlock.position.x, // Сохраняем X координату такой же, как у Collection
+            y: newYPosition
+          }
+        };
+      }
+      return block;
+    }));
+
+    // Обновляем список внутренних блоков Collection
+    setBlocks(prev => prev.map(block => {
+      if (block.id === collectionId) {
+        return {
+          ...block,
+          internalBlocks: connectedBlocks
+        };
+      }
+      return block;
+    }));
+  };
+
+  // Проверка, находится ли блок между Collection и CollectionEnd
+  const isBlockBetweenCollection = (blockId: string, collectionId: string) => {
+    const collectionBlock = blocks.find(b => b.id === collectionId && b.type === 'Collection');
+    if (!collectionBlock || !collectionBlock.pairedWithId) return false;
+
+    const collectionEndId = collectionBlock.pairedWithId;
+    const blockToCheck = blocks.find(b => b.id === blockId);
+    if (!blockToCheck) return false;
+
+    const blockPosition = getAbsolutePosition(blockToCheck);
+    const collectionPosition = getAbsolutePosition(collectionBlock);
+    const collectionEndBlock = blocks.find(b => b.id === collectionEndId);
+
+    if (!collectionEndBlock) return false;
+
+    const collectionEndPosition = getAbsolutePosition(collectionEndBlock);
+
+    // Проверяем по X, находится ли блок в пределах ширины Collection
+    const isWithinXRange =
+        blockPosition.x >= collectionPosition.x - 50 &&
+        blockPosition.x <= collectionPosition.x + 250; // Добавляем запас по ширине
+
+    // Проверяем по Y, находится ли блок между Collection и CollectionEnd
+    // Учитываем уменьшенную высоту для Collection
+    const isWithinYRange =
+        blockPosition.y > collectionPosition.y + COLLECTION_BLOCK_HEIGHT &&
+        blockPosition.y < collectionEndPosition.y;
+
+    return isWithinXRange && isWithinYRange;
+  };
+
+  // Добавление блока в Collection
+  const addBlockToCollection = (blockId: string, collectionId: string) => {
+    const collectionBlock = blocks.find(b => b.id === collectionId && b.type === 'Collection');
+    if (!collectionBlock) return;
+
+    // Обновляем список внутренних блоков для Collection
+    setBlocks(prev => prev.map(block => {
+      if (block.id === collectionId) {
+        const updatedInternalBlocks = [...(block.internalBlocks || [])];
+        if (!updatedInternalBlocks.includes(blockId)) {
+          updatedInternalBlocks.push(blockId);
+        }
+        return {
+          ...block,
+          internalBlocks: updatedInternalBlocks
+        };
+      }
+      return block;
+    }));
+
+    // Обновляем позицию CollectionEnd
+    setTimeout(() => {
+      updateCollectionEndPosition(collectionId);
+    }, 50);
+  };
+
+  // Удаление блока из Collection
+  const removeBlockFromCollection = (blockId: string, collectionId: string) => {
+    const collectionBlock = blocks.find(b => b.id === collectionId && b.type === 'Collection');
+    if (!collectionBlock) return;
+
+    // Обновляем список внутренних блоков для Collection
+    setBlocks(prev => prev.map(block => {
+      if (block.id === collectionId) {
+        return {
+          ...block,
+          internalBlocks: (block.internalBlocks || []).filter(id => id !== blockId)
+        };
+      }
+      return block;
+    }));
+
+    // Обновляем позицию CollectionEnd
+    setTimeout(() => {
+      updateCollectionEndPosition(collectionId);
+    }, 50);
+  };
+
   // Создание нового блока
   const addBlock = () => {
     const id = `block-${Date.now()}`;
@@ -140,6 +303,59 @@ const FlowBuilder = () => {
 
       setBlocks((prev) => [...prev, newBlock]);
       setFlowCounter(prev => prev + 1);
+      return;
+    }
+
+    // Если это Collection, создаем пару блоков (Collection и CollectionEnd)
+    if (selectedBlockType === 'Collection') {
+      title = `Collection${collectionCounter}`;
+
+      const collectionEndId = `collection-end-${Date.now()}`;
+      const collectionEndBlock: Block = {
+        id: collectionEndId,
+        type: 'CollectionEnd',
+        title: `CollectionEnd${collectionCounter}`, // Используем тот же номер для CollectionEnd
+        position: { x: 100, y: 100 + COLLECTION_DEFAULT_GAP }, // Располагаем под блоком Collection на расстоянии 2-х блоков
+        connections: {
+          top: id, // Соединяем с блоком Collection
+          bottom: [], // У CollectionEnd может быть нижний коннектор
+        },
+        pairedWithId: id, // ID связанного блока Collection
+        zIndex: currentZIndex + 1, // CollectionEnd будет выше чем Collection
+      };
+
+      // Создаем блок Collection
+      const newBlock: Block = {
+        id,
+        type: selectedBlockType,
+        title: title,
+        position: { x: 100, y: 100 },
+        connections: {
+          top: null,
+          bottom: [collectionEndId], // Соединяем с CollectionEnd
+        },
+        pairedWithId: collectionEndId, // ID связанного блока CollectionEnd
+        internalBlocks: [], // Список блоков внутри Collection
+        zIndex: currentZIndex,
+      };
+
+      // Добавляем оба блока
+      setBlocks((prev) => [...prev, newBlock, collectionEndBlock]);
+
+      // Добавляем соединение между ними
+      setConnections((prev) => [
+        ...prev,
+        {
+          from: { id, point: 'bottom' },
+          to: { id: collectionEndId, point: 'top' },
+        }
+      ]);
+
+      // Увеличиваем счетчик Collection
+      setCollectionCounter(prev => prev + 1);
+
+      // Увеличиваем z-index ещё раз (для следующего блока)
+      setNextZIndex(currentZIndex + 2);
       return;
     }
 
@@ -224,6 +440,8 @@ const FlowBuilder = () => {
         return 'End';
       case 'Flow':
         return 'Flow';
+      case 'Collection':
+        return 'Collection';
       default:
         return 'Block';
     }
@@ -290,6 +508,18 @@ const FlowBuilder = () => {
       }, 0);
     }
 
+    // Если блок находится внутри Collection, удаляем его из списка внутренних блоков Collection
+    // и обновляем позицию CollectionEnd
+    const parentCollection = blocks.find(b =>
+        b.type === 'Collection' &&
+        b.internalBlocks &&
+        b.internalBlocks.includes(id)
+    );
+
+    if (parentCollection) {
+      removeBlockFromCollection(id, parentCollection.id);
+    }
+
     // Если это Flow, нужно сначала освободить все вложенные блоки
     if (blockToRemove.type === 'Flow' && blockToRemove.children && blockToRemove.children.length > 0) {
       // Обновляем позиции блоков, которые были внутри Flow
@@ -309,6 +539,42 @@ const FlowBuilder = () => {
             return block;
           })
       );
+    }
+
+    // Если это Collection, удаляем связанный CollectionEnd и все соединения
+    if (blockToRemove.type === 'Collection' && blockToRemove.pairedWithId) {
+      const collectionEndId = blockToRemove.pairedWithId;
+
+      // Удаляем блоки Collection и CollectionEnd
+      const idsToRemove = new Set([id, collectionEndId]);
+
+      // Удаляем все соединения, связанные с этими блоками
+      setConnections(connections.filter(conn =>
+          !idsToRemove.has(conn.from.id) && !idsToRemove.has(conn.to.id)
+      ));
+
+      // Удаляем блоки
+      setBlocks(blocks.filter(block => !idsToRemove.has(block.id)));
+
+      return;
+    }
+
+    // Если это CollectionEnd, удаляем связанный Collection и все соединения
+    if (blockToRemove.type === 'CollectionEnd' && blockToRemove.pairedWithId) {
+      const collectionId = blockToRemove.pairedWithId;
+
+      // Удаляем блоки Collection и CollectionEnd
+      const idsToRemove = new Set([id, collectionId]);
+
+      // Удаляем все соединения, связанные с этими блоками
+      setConnections(connections.filter(conn =>
+          !idsToRemove.has(conn.from.id) && !idsToRemove.has(conn.to.id)
+      ));
+
+      // Удаляем блоки
+      setBlocks(blocks.filter(block => !idsToRemove.has(block.id)));
+
+      return;
     }
 
     // Проверяем, является ли блок частью пары Switch/SwitchEnd
@@ -404,7 +670,7 @@ const FlowBuilder = () => {
   };
 
 // Исправленная версия функции начала перетаскивания
-// Восстанавливаем функциональность соединения Switch
+// Восстанавливаем функциональность соединения Switch и Collection
   const handleDragStart = (e: React.MouseEvent, id: string) => {
     if (!canvasRef.current) return;
 
@@ -418,8 +684,8 @@ const FlowBuilder = () => {
     if (connecting && connecting.blockId !== id && connecting.point === 'bottom') {
       const sourceBlock = blocks.find(b => b.id === connecting.blockId);
 
-      if (sourceBlock && sourceBlock.type === 'Switch' && block.type !== 'Start') {
-        // Соединяем Switch с выбранным блоком
+      if (sourceBlock && (sourceBlock.type === 'Switch' || sourceBlock.type === 'Collection') && block.type !== 'Start') {
+        // Соединяем Switch или Collection с выбранным блоком
         // Проверяем, что у целевого блока нет соединения сверху
         if (block.connections.top === null) {
           // Целевой блок должен иметь z-index выше, чем родительский блок
@@ -428,7 +694,7 @@ const FlowBuilder = () => {
           // Обновляем соединения в блоках
           setBlocks(blocks.map(b => {
             if (b.id === sourceBlock.id) {
-              // Обновляем Source блок (Switch)
+              // Обновляем Source блок (Switch или Collection)
               return {
                 ...b,
                 connections: {
@@ -458,6 +724,12 @@ const FlowBuilder = () => {
               to: { id: block.id, point: 'top' }
             }
           ]);
+
+          // Если блок добавляется к Collection, проверяем, не находится ли он между Collection и CollectionEnd
+          if (sourceBlock.type === 'Collection') {
+            // Добавляем блок в список внутренних блоков Collection
+            addBlockToCollection(block.id, sourceBlock.id);
+          }
 
           // Воспроизводим звук подключения
           playConnectSound();
@@ -501,6 +773,16 @@ const FlowBuilder = () => {
     if (!block) return [];
 
     const connectedIds: string[] = [];
+
+    // Если это Collection, добавляем CollectionEnd
+    if (block.type === 'Collection' && block.pairedWithId) {
+      connectedIds.push(block.pairedWithId);
+
+      // Также добавляем все внутренние блоки
+      if (block.internalBlocks) {
+        connectedIds.push(...block.internalBlocks);
+      }
+    }
 
     // Получаем блоки, подключенные снизу
     for (const bottomId of block.connections.bottom) {
@@ -606,7 +888,7 @@ const FlowBuilder = () => {
     updateFlowSize(flowId);
   };
 
-  // Перетаскивание - упрощенная версия
+  // Перетаскивание - с поддержкой Collection (обновленная версия)
   const handleDrag = (e: MouseEvent) => {
     if (!draggedBlock || !canvasRef.current) return;
 
@@ -649,18 +931,22 @@ const FlowBuilder = () => {
     // Используем вертикальное расстояние для определения отсоединения
     const disconnectThreshold = 15; // Порог расстояния для отсоединения блока
 
-    // Если блок имеет соединение сверху (и это не связка Switch-SwitchEnd)
+    // Если блок имеет соединение сверху (и это не связка Switch-SwitchEnd или Collection-CollectionEnd)
     if (hasTopConnection) {
       const parentBlockId = currentBlock.connections.top;
       const parentBlock = updatedBlocks.find(b => b.id === parentBlockId);
 
       if (parentBlock) {
-        // Не отсоединяем SwitchEnd от его Switch или блоки от Switch
+        // Проверяем, не является ли это пара Collection-CollectionEnd
+        const isCollectionEndPair = parentBlock.type === 'Collection' && currentBlock.type === 'CollectionEnd';
+
+        // Не отсоединяем SwitchEnd от его Switch или блоки от Switch, CollectionEnd от Collection
         const isSwitchEndPair = parentBlock.title.startsWith('Switch') && currentBlock.title.startsWith('SwitchEnd');
         const isConnectedToSwitch = parentBlock.type === 'Switch';
+        const isConnectedToCollection = parentBlock.type === 'Collection';
 
-        // Изменяем условие: не отсоединять если это Switch или пара Switch-SwitchEnd
-        if (!isSwitchEndPair && !isConnectedToSwitch) {
+        // Изменяем условие: не отсоединять если это Switch, Collection или пары
+        if (!isSwitchEndPair && !isCollectionEndPair && !isConnectedToSwitch && !isConnectedToCollection) {
           // Получаем абсолютные позиции блоков
           const parentPos = getAbsolutePosition(parentBlock);
           const currentPos = { x: newX, y: newY };
@@ -712,6 +998,30 @@ const FlowBuilder = () => {
                     !(conn.from.id === currentBlock.id && conn.to.id === parentBlockId)
                 )
             );
+
+            // Если блок был в Collection, удаляем его из внутренних блоков
+            if (parentBlock.type === 'Collection') {
+              removeBlockFromCollection(currentBlock.id, parentBlockId);
+            }
+          }
+        }
+      }
+    }
+
+    // Находим все коллекции и проверяем, находится ли блок между Collection и CollectionEnd
+    if (currentBlock.type !== 'Collection' && currentBlock.type !== 'CollectionEnd') {
+      const collections = blocks.filter(b => b.type === 'Collection');
+
+      for (const collection of collections) {
+        // Если блок между Collection и CollectionEnd, добавляем его в список внутренних блоков
+        if (isBlockBetweenCollection(currentBlock.id, collection.id)) {
+          if (!collection.internalBlocks?.includes(currentBlock.id)) {
+            addBlockToCollection(currentBlock.id, collection.id);
+          }
+        } else {
+          // Если блок НЕ между Collection и CollectionEnd, но был в списке внутренних блоков, удаляем его
+          if (collection.internalBlocks?.includes(currentBlock.id)) {
+            removeBlockFromCollection(currentBlock.id, collection.id);
           }
         }
       }
@@ -720,6 +1030,29 @@ const FlowBuilder = () => {
     // Получаем список всех блоков, которые нужно сместить
     // Включая блоки внутри Flow, если перетаскивается Flow
     const connectedBlocks = getConnectedBlocksBelow(draggedBlock.id);
+
+    // Если перетаскивается блок Collection или CollectionEnd
+    const isCollectionBlock = currentBlock.type === 'Collection';
+    const isCollectionEndBlock = currentBlock.type === 'CollectionEnd';
+
+    // Получаем связанную пару (Collection или CollectionEnd)
+    let pairedBlockId = null;
+    if (isCollectionBlock) {
+      pairedBlockId = currentBlock.pairedWithId;
+    } else if (isCollectionEndBlock) {
+      pairedBlockId = currentBlock.pairedWithId;
+    }
+
+    // Получаем все внутренние блоки Collection
+    let collectionInternalBlocks: string[] = [];
+    if (isCollectionBlock) {
+      collectionInternalBlocks = currentBlock.internalBlocks || [];
+    } else if (isCollectionEndBlock) {
+      const pairedCollection = blocks.find(b => b.id === pairedBlockId);
+      if (pairedCollection) {
+        collectionInternalBlocks = pairedCollection.internalBlocks || [];
+      }
+    }
 
     // Обновляем позиции текущего и связанных блоков
     updatedBlocks = updatedBlocks.map(block => {
@@ -774,7 +1107,44 @@ const FlowBuilder = () => {
 
         // Обычный блок не в Flow или Flow блок
         return { ...block, position: { x: newX, y: newY } };
-      } else if (connectedBlocks.includes(block.id)) {
+      }
+      // Обработка парных блоков Collection
+      else if (pairedBlockId && block.id === pairedBlockId) {
+        if (isCollectionBlock) {
+          // Если перетаскивается Collection, перемещаем CollectionEnd
+          // по вертикали, сохраняя расстояние между ними
+          return {
+            ...block,
+            position: {
+              x: newX, // Та же X координата
+              y: block.position.y + deltaY // Сохраняем вертикальное расстояние
+            }
+          };
+        } else if (isCollectionEndBlock) {
+          // Если перетаскивается CollectionEnd, перемещаем Collection
+          // по горизонтали и по вертикали
+          return {
+            ...block,
+            position: {
+              x: newX,  // Та же X координата
+              y: block.position.y + deltaY // Сохраняем вертикальное расстояние
+            }
+          };
+        }
+      }
+      // Обработка блоков внутри Collection
+      else if ((isCollectionBlock || isCollectionEndBlock) && collectionInternalBlocks.includes(block.id)) {
+        // Перемещаем все внутренние блоки Collection вместе с ней
+        return {
+          ...block,
+          position: {
+            x: block.position.x + deltaX, // Перемещаем по X
+            y: block.position.y + deltaY  // Перемещаем по Y
+          }
+        };
+      }
+      // Обработка обычных связанных блоков
+      else if (connectedBlocks.includes(block.id)) {
         // Перемещаем все связанные блоки на то же смещение
         // Если это блок внутри Flow и Flow сам перетаскивается, то не меняем его внутреннюю позицию
         if (block.parentFlow && block.parentFlow === draggedBlock.id) {
@@ -828,6 +1198,17 @@ const FlowBuilder = () => {
     });
 
     setBlocks(updatedBlocks);
+
+    // Если перетаскивается любой блок из Collection, обновляем позицию CollectionEnd
+    if (isCollectionBlock) {
+      setTimeout(() => {
+        updateCollectionEndPosition(currentBlock.id);
+      }, 0);
+    } else if (isCollectionEndBlock && pairedBlockId) {
+      setTimeout(() => {
+        updateCollectionEndPosition(pairedBlockId);
+      }, 0);
+    }
   };
 
   // Конец перетаскивания
@@ -844,6 +1225,23 @@ const FlowBuilder = () => {
     const updatedConnections = [...connections];
     let connectionCreated = false;
 
+    // Если перетаскивается Collection, обновляем позицию CollectionEnd
+    if (currentBlock.type === 'Collection' && currentBlock.pairedWithId) {
+      setTimeout(() => {
+        updateCollectionEndPosition(currentBlock.id);
+      }, 0);
+    }
+
+    // Если перетаскивается CollectionEnd, обновляем позицию соответствующего Collection
+    if (currentBlock.type === 'CollectionEnd' && currentBlock.pairedWithId) {
+      const collectionBlock = blocks.find(b => b.id === currentBlock.pairedWithId);
+      if (collectionBlock) {
+        setTimeout(() => {
+          updateCollectionEndPosition(collectionBlock.id);
+        }, 0);
+      }
+    }
+
     // Проверяем, нужно ли восстановить позицию блока относительно родителя
     // Это для случая, когда блок имеет соединение сверху и был перемещен несильно
     if (currentBlock.connections.top !== null) {
@@ -851,12 +1249,14 @@ const FlowBuilder = () => {
       const parentBlock = blocks.find(b => b.id === parentBlockId);
 
       if (parentBlock) {
-        // Не применяем к SwitchEnd или когда родитель - Switch
+        // Не применяем к SwitchEnd, CollectionEnd или когда родитель - Switch/Collection
         const isSwitchEndPair = parentBlock.title.startsWith('Switch') && currentBlock.title.startsWith('SwitchEnd');
+        const isCollectionEndPair = parentBlock.type === 'Collection' && currentBlock.type === 'CollectionEnd';
         const isParentSwitch = parentBlock.type === 'Switch';
+        const isParentCollection = parentBlock.type === 'Collection';
 
-        // Жесткую фиксацию применяем только для обычных блоков, не для соединений со Switch
-        if (!isSwitchEndPair && !isParentSwitch) {
+        // Жесткую фиксацию применяем только для обычных блоков, не для соединений со Switch/Collection
+        if (!isSwitchEndPair && !isCollectionEndPair && !isParentSwitch && !isParentCollection) {
           // Вычисляем правильную позицию для блока под родителем
           let newPositionX, newPositionY;
 
@@ -937,6 +1337,20 @@ const FlowBuilder = () => {
           // Сбрасываем draggedBlock и обновляем блоки
           setDraggedBlock(null);
           setBlocks(updatedBlocks);
+
+          // Если блок внутри Collection, обновляем позицию CollectionEnd
+          const parentCollection = blocks.find(b =>
+              b.type === 'Collection' &&
+              b.internalBlocks &&
+              b.internalBlocks.includes(currentBlock.id)
+          );
+
+          if (parentCollection) {
+            setTimeout(() => {
+              updateCollectionEndPosition(parentCollection.id);
+            }, 0);
+          }
+
           return;
         }
       }
@@ -1039,7 +1453,7 @@ const FlowBuilder = () => {
     }
 
     // Если блок не был добавлен в Flow, проверяем возможность соединения с другими блоками
-    if (!connecting && !currentBlock.title.startsWith('SwitchEnd')) {
+    if (!connecting && !currentBlock.title.startsWith('SwitchEnd') && !currentBlock.type.startsWith('CollectionEnd')) {
       const absolutePosition = getAbsolutePosition(currentBlock);
       const currentX = absolutePosition.x;
       const currentY = absolutePosition.y;
@@ -1055,8 +1469,8 @@ const FlowBuilder = () => {
           if (targetBlock.id === currentBlock.id ||
               (targetBlock.type === 'End' && !targetBlock.title.startsWith('SwitchEnd'))) continue;
 
-          // Пропускаем блоки, у которых уже есть соединение снизу (кроме Switch)
-          if (targetBlock.type !== 'Switch' && targetBlock.connections.bottom.length > 0) continue;
+          // Пропускаем блоки, у которых уже есть соединение снизу (кроме Switch и Collection)
+          if (targetBlock.type !== 'Switch' && targetBlock.type !== 'Collection' && targetBlock.connections.bottom.length > 0) continue;
 
           // Получаем абсолютную позицию целевого блока
           const targetPosition = getAbsolutePosition(targetBlock);
@@ -1165,6 +1579,13 @@ const FlowBuilder = () => {
 
             connectionCreated = true;
 
+            // Если целевой блок - Collection, сразу обновляем его состояние
+            if (targetBlock.type === 'Collection') {
+              setTimeout(() => {
+                updateCollectionEndPosition(targetBlock.id);
+              }, 50);
+            }
+
             // Воспроизводим звук подключения
             playConnectSound();
 
@@ -1185,8 +1606,8 @@ const FlowBuilder = () => {
           // Пропускаем блоки, которые уже имеют соединение сверху
           if (targetBlock.connections.top !== null) continue;
 
-          // Проверяем, есть ли у текущего блока уже соединение снизу (кроме Switch)
-          if (currentBlock.type !== 'Switch' && currentBlock.connections.bottom.length > 0) continue;
+          // Проверяем, есть ли у текущего блока уже соединение снизу (кроме Switch и Collection)
+          if (currentBlock.type !== 'Switch' && currentBlock.type !== 'Collection' && currentBlock.connections.bottom.length > 0) continue;
 
           // Получаем абсолютную позицию целевого блока
           const targetPosition = getAbsolutePosition(targetBlock);
@@ -1290,6 +1711,13 @@ const FlowBuilder = () => {
 
             connectionCreated = true;
 
+            // Если текущий блок - Collection, сразу обновляем его состояние
+            if (currentBlock.type === 'Collection') {
+              setTimeout(() => {
+                updateCollectionEndPosition(currentBlock.id);
+              }, 50);
+            }
+
             // Воспроизводим звук подключения
             playConnectSound();
 
@@ -1325,6 +1753,18 @@ const FlowBuilder = () => {
       setTimeout(() => updateFlowSize(currentBlock.id), 0);
     }
 
+    // Если блок находится внутри Collection, обновляем позицию CollectionEnd
+    const parentCollection = blocks.find(b =>
+        b.type === 'Collection' &&
+        b.connections.bottom.some(id => id === currentBlock.id)
+    );
+
+    if (parentCollection) {
+      setTimeout(() => {
+        updateCollectionEndPosition(parentCollection.id);
+      }, 50);
+    }
+
     setBlocks(updatedBlocks);
     setConnections(updatedConnections);
     setDraggedBlock(null);
@@ -1335,9 +1775,9 @@ const FlowBuilder = () => {
   const handleConnectorClick = (blockId: string, point: 'top' | 'bottom') => {
     console.log(`Клик по коннектору блока ${blockId}, точка ${point}`);
 
-    // Разрешаем соединение для Switch и Flow
+    // Разрешаем соединение для Switch и Collection и Flow
     const block = blocks.find(b => b.id === blockId);
-    if (!block || (block.type !== 'Switch' && block.type !== 'Flow')) return;
+    if (!block || (block.type !== 'Switch' && block.type !== 'Collection' && block.type !== 'Flow')) return;
 
     if (connecting) {
       // Если мы уже начали соединение, завершаем его
@@ -1395,6 +1835,11 @@ const FlowBuilder = () => {
             }
           ]);
 
+          // Если исходный блок - Collection, добавляем целевой блок в список внутренних блоков
+          if (sourceBlock.type === 'Collection') {
+            addBlockToCollection(targetBlock.id, sourceBlock.id);
+          }
+
           // Воспроизводим звук подключения
           playConnectSound();
           console.log(`Соединение создано между ${sourceBlock.title} и ${targetBlock.title}`);
@@ -1448,11 +1893,23 @@ const FlowBuilder = () => {
       return block;
     });
 
-    // Удаляем соединение из списка соединений
-    const updatedConnections = connections.filter((_, index) => index !== connectionIndex);
+    // Если fromBlock - Collection, обновляем его через updateCollectionEndPosition
+    if (fromBlock.type === 'Collection') {
+      // Удаляем соединение из списка соединений
+      const updatedConnections = connections.filter((_, index) => index !== connectionIndex);
+      setBlocks(updatedBlocks);
+      setConnections(updatedConnections);
 
-    setBlocks(updatedBlocks);
-    setConnections(updatedConnections);
+      // Обновляем позицию CollectionEnd и списки внутренних блоков
+      setTimeout(() => {
+        updateCollectionEndPosition(fromBlock.id);
+      }, 50);
+    } else {
+      // Удаляем соединение из списка соединений
+      const updatedConnections = connections.filter((_, index) => index !== connectionIndex);
+      setBlocks(updatedBlocks);
+      setConnections(updatedConnections);
+    }
   };
 
   // Добавляем обработчики событий
@@ -1472,6 +1929,11 @@ const FlowBuilder = () => {
   const getConnectorCoordinates = (block: Block, point: 'top' | 'bottom') => {
     const absolutePosition = getAbsolutePosition(block);
 
+    // Определяем высоту блока в зависимости от его типа
+    const blockHeight = (block.type === 'Collection' || block.type === 'CollectionEnd')
+        ? COLLECTION_BLOCK_HEIGHT
+        : BLOCK_HEIGHT;
+
     // Учитываем тип блока для определения координат
     let x, y;
 
@@ -1486,7 +1948,7 @@ const FlowBuilder = () => {
       x = absolutePosition.x + 100; // середина блока по горизонтали
       y = point === 'top'
           ? absolutePosition.y
-          : absolutePosition.y + 80; // верх или низ блока
+          : absolutePosition.y + blockHeight; // верх или низ блока
     }
 
     return { x, y };
@@ -1506,7 +1968,24 @@ const FlowBuilder = () => {
         return null;
       }
 
-      // Показываем соединения только от блоков Switch
+      // Не отображаем соединение между Collection и CollectionEnd
+      if (fromBlock.type === 'Collection' && toBlock.type === 'CollectionEnd' &&
+          fromBlock.pairedWithId === toBlock.id) {
+        return null;
+      }
+
+      // Не отображаем соединения для блоков внутри Collection
+      const isToBlockInCollection = blocks.some(b =>
+          b.type === 'Collection' &&
+          b.internalBlocks &&
+          b.internalBlocks.includes(toBlock.id)
+      );
+
+      if (isToBlockInCollection && fromBlock.type === 'Collection') {
+        return null;
+      }
+
+      // Показываем соединения только от блоков Switch (не от Collection)
       if (fromBlock.type !== 'Switch') {
         return null;
       }
@@ -1570,6 +2049,10 @@ const FlowBuilder = () => {
         return 'bg-red-100 border-red-200';
       case 'Flow':
         return 'bg-blue-50 border-blue-200';
+      case 'Collection':
+        return 'bg-pink-100 border-pink-200';
+      case 'CollectionEnd':
+        return 'bg-pink-100 border-pink-200';
       default:
         return 'bg-gray-100 border-gray-200';
     }
@@ -1594,6 +2077,16 @@ const FlowBuilder = () => {
             [data-dragging="true"] {
               z-index: 1000 !important;
             }
+            
+            /* Стили для Collection и BlockCollection */
+            [data-block-type="Collection"], [data-block-type="CollectionEnd"] {
+              border-left: 4px solid rgba(219, 39, 119, 0.7) !important;
+            }
+            
+            /* Визуальное отображение связи между Collection и CollectionEnd */
+            [data-collection-pair="true"] {
+              box-shadow: 0 0 0 2px rgba(219, 39, 119, 0.3) !important;
+            }
           `}
         </style>
 
@@ -1614,6 +2107,7 @@ const FlowBuilder = () => {
               <option value="Start">Start</option>
               <option value="End">End</option>
               <option value="Flow">Flow</option>
+              <option value="Collection">Collection</option>
             </select>
             <button
                 className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
@@ -1633,8 +2127,9 @@ const FlowBuilder = () => {
                 <p>• Drag and <strong>release</strong> blocks near each other to connect them</p>
                 <p>• You can connect blocks both ways (top-to-bottom or bottom-to-top)</p>
                 <p>• Each Switch has a paired SwitchEnd that moves together with it</p>
-                <p>• SwitchEnd can have connections below it</p>
-                <p>• For Switch block: click on the <strong>bottom connector</strong> of Switch (it will turn blue), then click on <strong>any block</strong> you want to connect</p>
+                <p>• Each Collection has a paired CollectionEnd that moves together with it</p>
+                <p>• When you add blocks to Collection, the CollectionEnd block will move down automatically</p>
+                <p>• For Switch and Collection blocks: click on the <strong>bottom connector</strong> (it will turn blue), then click on <strong>any block</strong> you want to connect</p>
                 <p>• Click on the <strong>red X button</strong> on a connection line to remove it</p>
                 <p>• Sound feedback is provided when connecting blocks</p>
                 <p>• <strong>Flow</strong> blocks can contain other blocks - drag a block over a Flow to add it inside</p>
@@ -1663,15 +2158,55 @@ const FlowBuilder = () => {
             {renderConnections()}
           </svg>
 
+          {/* Вертикальные линии соединения для Collection и CollectionEnd */}
+          <svg className="absolute w-full h-full pointer-events-none" style={{ zIndex: 0 }}>
+            {blocks.map(block => {
+              if (block.type === 'Collection' && block.pairedWithId) {
+                const collectionEndBlock = blocks.find(b => b.id === block.pairedWithId);
+                if (!collectionEndBlock) return null;
+
+                const startPos = getAbsolutePosition(block);
+                const endPos = getAbsolutePosition(collectionEndBlock);
+
+                // Рисуем только вертикальную линию между Collection и CollectionEnd
+                // (горизонтальные линии к подключённым блокам убраны)
+                return (
+                    <line
+                        key={`collection-line-${block.id}`}
+                        x1={startPos.x + 10} // Немного смещаем от левого края
+                        y1={startPos.y + 40} // Используем половинную высоту блока (40px)
+                        x2={endPos.x + 10}
+                        y2={endPos.y}
+                        stroke="rgba(219, 39, 119, 0.5)" // Розовый цвет для Collection
+                        strokeWidth="2"
+                        strokeDasharray="4,4" // Пунктирная линия
+                    />
+                );
+              }
+              return null;
+            })}
+          </svg>
+
           {blocks.map((block) => {
             const isFlow = block.type === 'Flow';
+            const isCollection = block.type === 'Collection';
+            const isCollectionEnd = block.type === 'CollectionEnd';
             const absolutePosition = getAbsolutePosition(block);
+
+            // Определяем, находится ли блок внутри Collection
+            const inCollection = blocks.some(b =>
+                b.type === 'Collection' &&
+                b.internalBlocks &&
+                b.internalBlocks.includes(block.id)
+            );
 
             return (
                 <div
                     key={block.id}
                     data-block-type={block.type}
                     data-in-flow={block.parentFlow ? "true" : "false"}
+                    data-in-collection={inCollection ? "true" : "false"}
+                    data-collection-pair={isCollection || isCollectionEnd ? "true" : "false"}
                     data-dragging={draggedBlock?.id === block.id ? "true" : "false"}
                     className={`absolute cursor-move ${isFlow ? 'border-2 border-dashed' : ''} 
                               ${hoveredFlow === block.id ? 'border-blue-500 bg-blue-100' : ''}
@@ -1680,7 +2215,7 @@ const FlowBuilder = () => {
                       left: `${absolutePosition.x}px`,
                       top: `${absolutePosition.y}px`,
                       width: isFlow ? `${block.width || FLOW_MIN_WIDTH}px` : '200px',
-                      height: isFlow ? `${block.height || FLOW_MIN_HEIGHT}px` : '80px',
+                      height: isFlow ? `${block.height || FLOW_MIN_HEIGHT}px` : ((isCollection || isCollectionEnd) ? '40px' : '80px'),
                       zIndex: block.type === 'Flow' ? 1 : (block.parentFlow ? 100 : block.zIndex),
                       backgroundColor: isFlow ? 'rgba(240, 248, 255, 0.5)' : undefined,
                       transition: 'none',
@@ -1689,15 +2224,15 @@ const FlowBuilder = () => {
                           ? '0 0 8px rgba(59, 130, 246, 0.6), 0 0 0 2px rgba(59, 130, 246, 0.2)'
                           : 'none',
                       // Увеличенная прозрачность для Flow при наведении
-                  // Добавляем эффект подсветки при наведении на Flow
-                  opacity: hoveredFlow === block.id ? 'var(--flow-hover-opacity, 0.4)' : '1',
-                  }}
-                  onMouseDown={(e) => {
-                  // Не начинаем перетаскивание, если клик был по кнопке удаления
-                  if ((e.target as HTMLElement).closest('button')) return;
-                  handleDragStart(e, block.id);
-                }}
-                  >
+                      // Добавляем эффект подсветки при наведении на Flow
+                      opacity: hoveredFlow === block.id ? 'var(--flow-hover-opacity, 0.4)' : '1',
+                    }}
+                    onMouseDown={(e) => {
+                      // Не начинаем перетаскивание, если клик был по кнопке удаления
+                      if ((e.target as HTMLElement).closest('button')) return;
+                      handleDragStart(e, block.id);
+                    }}
+                >
                   {/* Индикатор для блоков внутри Flow */}
                   {block.parentFlow && (
                       <>
@@ -1706,6 +2241,17 @@ const FlowBuilder = () => {
                         </div>
                         {/* Визуальный элемент соединения с Flow */}
                         <div className="absolute left-0 top-1/2 transform -translate-y-1/2 -translate-x-1.5 w-3 h-3 rounded-full bg-blue-500 border-2 border-white z-20"></div>
+                      </>
+                  )}
+
+                  {/* Индикатор для блоков внутри Collection */}
+                  {inCollection && !isCollection && !isCollectionEnd && (
+                      <>
+                        <div className="absolute top-0 right-0 bg-pink-500 text-white px-1 text-xs rounded-bl opacity-75">
+                          In Collection
+                        </div>
+                        {/* Визуальный элемент соединения с Collection */}
+                        <div className="absolute left-0 top-1/2 transform -translate-y-1/2 -translate-x-1.5 w-3 h-3 rounded-full bg-pink-500 border-2 border-white z-20"></div>
                       </>
                   )}
 
@@ -1753,28 +2299,33 @@ const FlowBuilder = () => {
                       ${connecting && connecting.blockId !== block.id ? 'animate-pulse' : ''}
                       ${connecting && connecting.blockId === block.id && connecting.point === 'top' ? 'bg-blue-100' : ''}
                     `}
-                                onClick={() => block.type === 'Switch' ? handleConnectorClick(block.id, 'top') : null}
+                                onClick={() => (block.type === 'Switch' || block.type === 'Collection') ? handleConnectorClick(block.id, 'top') : null}
                             ></div>
                         )}
 
                         {/* Основное тело блока */}
                         <div
-                            className={`rounded-lg shadow-md ${getBlockColor(block.type)} border-2 border-cyan-300 h-20 relative flex`}
+                            className={`rounded-lg shadow-md ${getBlockColor(block.type)} border-2 border-cyan-300 relative flex`}
                             style={{
+                              height: (block.type === 'Collection' || block.type === 'CollectionEnd') ? '40px' : '80px',
                               borderTopLeftRadius: block.type === 'Start' ? '15px' : '0',
                               borderTopRightRadius: '15px',
                               borderBottomLeftRadius: '15px',
-                              borderBottomRightRadius: block.type === 'End' && !block.title.startsWith('SwitchEnd') ? '15px' : '0',
+                              borderBottomRightRadius:
+                                  (block.type === 'End' && !block.title.startsWith('SwitchEnd')) ||
+                                  block.type === 'CollectionEnd' ? '15px' : '0',
                             }}
                         >
                           {/* Закругленный левый верхний угол с рисунком */}
-                          <div className="w-16 h-full flex items-center justify-center">
-                            <div className="w-10 h-10 rounded-full bg-gray-600 flex items-center justify-center">
+                          <div className={`w-16 h-full flex items-center justify-center ${(block.type === 'Collection' || block.type === 'CollectionEnd') ? 'scale-75' : ''}`}>
+                            <div className={`${(block.type === 'Collection' || block.type === 'CollectionEnd') ? 'w-8 h-8' : 'w-10 h-10'} rounded-full bg-gray-600 flex items-center justify-center`}>
                               {block.type === 'Action' && <div className="w-2 h-2 rounded-full bg-white"></div>}
                               {block.type === 'Table' && <div className="w-5 h-3 border border-white"></div>}
                               {block.type === 'Switch' && <ChevronRight size={14} className="text-white" />}
                               {block.type === 'Start' && <div className="w-2 h-2 rounded-full bg-white"></div>}
                               {block.type === 'End' && <div className="w-2 h-2 rounded bg-white"></div>}
+                              {block.type === 'Collection' && <Database size={12} className="text-white" />}
+                              {block.type === 'CollectionEnd' && <Database size={12} className="text-white" />}
                             </div>
                           </div>
 
@@ -1782,19 +2333,19 @@ const FlowBuilder = () => {
                           <div className="flex-1 py-2 pr-2 flex flex-col justify-center">
                             {/* Заголовок и кнопка удаления */}
                             <div className="flex justify-between items-center">
-                              <span className="font-semibold text-black">{block.title}</span>
+                              <span className={`font-semibold text-black ${(block.type === 'Collection' || block.type === 'CollectionEnd') ? 'text-xs' : ''}`}>{block.title}</span>
                               <button
                                   className="text-gray-500 hover:text-red-500"
                                   onClick={() => removeBlock(block.id)}
                               >
-                                <X size={16} />
+                                <X size={(block.type === 'Collection' || block.type === 'CollectionEnd') ? 14 : 16} />
                               </button>
                             </div>
                           </div>
                         </div>
 
                         {/* Нижний коннектор (выемка) */}
-                        {(block.type !== 'End' || block.title.startsWith('SwitchEnd')) && (
+                        {(block.type !== 'End' || block.title.startsWith('SwitchEnd') || block.type === 'CollectionEnd') && (
                             <div className="relative">
                               <div
                                   className={`absolute -bottom-0 rotate-180 left-4 w-20 h-3 bg-white border-l-2 border-r-2 border-b-2 border-cyan-300
@@ -1802,7 +2353,7 @@ const FlowBuilder = () => {
                         ${connecting && connecting.blockId === block.id && connecting.point === 'bottom' ? 'bg-blue-100' : ''}
                       `}
                                   style={{ borderBottomLeftRadius: '5px', borderBottomRightRadius: '5px' }}
-                                  onClick={() => block.type === 'Switch' ? handleConnectorClick(block.id, 'bottom') : null}
+                                  onClick={() => (block.type === 'Switch' || block.type === 'Collection') ? handleConnectorClick(block.id, 'bottom') : null}
                               ></div>
                             </div>
                         )}
