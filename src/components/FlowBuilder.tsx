@@ -38,6 +38,15 @@ const FLOW_MIN_WIDTH = 400; // Минимальная ширина Flow
 const BLOCK_HEIGHT = 80; // Высота блока
 const BLOCK_SPACING = 20; // Расстояние между блоками
 
+// Добавляем CSS переменные для эффектов
+const styleSheet = document.createElement('style');
+styleSheet.textContent = `
+  :root {
+    --flow-hover-opacity: 0.4;
+  }
+`;
+document.head.appendChild(styleSheet);
+
 const FlowBuilder = () => {
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
@@ -374,35 +383,38 @@ const FlowBuilder = () => {
     }
   };
 
-  // Получение абсолютной позиции блока (с учетом родительского Flow)
+// Получение абсолютной позиции блока (с учетом родительского Flow)
   const getAbsolutePosition = (block: Block) => {
+    // Если блок не в Flow, его позиция уже абсолютная
     if (!block.parentFlow) {
       return block.position;
     }
 
+    // Получаем родительский Flow
     const parentFlow = blocks.find(b => b.id === block.parentFlow);
     if (!parentFlow) {
       return block.position;
     }
 
+    // Возвращаем абсолютную позицию
     return {
       x: parentFlow.position.x + block.position.x,
       y: parentFlow.position.y + block.position.y
     };
   };
 
-  // Начало перетаскивания
+// Исправленная версия функции начала перетаскивания
+// Восстанавливаем функциональность соединения Switch
   const handleDragStart = (e: React.MouseEvent, id: string) => {
     if (!canvasRef.current) return;
 
     const block = blocks.find(b => b.id === id);
     if (!block) return;
 
-    // Если блок перетаскивается, сбрасываем hoveredFlow
+    // Сбрасываем подсветку Flow при начале перетаскивания
     setHoveredFlow(null);
 
-    // Если в данный момент идет процесс соединения от Switch, то при клике на блок
-    // нужно попытаться соединить Switch с этим блоком
+    // Проверяем, есть ли активный процесс соединения от Switch
     if (connecting && connecting.blockId !== id && connecting.point === 'bottom') {
       const sourceBlock = blocks.find(b => b.id === connecting.blockId);
 
@@ -456,17 +468,21 @@ const FlowBuilder = () => {
       }
     }
 
-    // Поднимаем z-index блока при начале перетаскивания
+    // Устанавливаем высокий z-index для перетаскиваемого блока
     setBlocks(blocks.map(b => {
       if (b.id === id) {
         return { ...b, zIndex: 1000 }; // Высокий z-index для активного блока
+      }
+      // Если это Flow, убедимся, что он имеет меньший z-index чем его дочерние блоки
+      if (b.type === 'Flow' && block.parentFlow === b.id) {
+        return { ...b, zIndex: 1 }; // Низкий z-index для родительского Flow
       }
       return b;
     }));
 
     const rect = canvasRef.current.getBoundingClientRect();
 
-    // Если блок находится внутри Flow, используем его относительную позицию для смещения
+    // Получаем АБСОЛЮТНУЮ позицию блока для правильного вычисления смещения
     const absolutePosition = getAbsolutePosition(block);
     const offsetX = e.clientX - rect.left - absolutePosition.x;
     const offsetY = e.clientY - rect.top - absolutePosition.y;
@@ -475,6 +491,7 @@ const FlowBuilder = () => {
   };
 
   // Получение всех блоков, подключенных ниже указанного блока
+  // Исправленная версия для надежного получения всех связанных блоков
   const getConnectedBlocksBelow = (blockId: string, visited: Set<string> = new Set()): string[] => {
     if (visited.has(blockId)) return [];
 
@@ -513,30 +530,26 @@ const FlowBuilder = () => {
       }
     }
 
-    return connectedIds;
+    // Возвращаем все уникальные ID (на всякий случай используем Set)
+    return [...new Set(connectedIds)];
   };
 
-  // Проверка, находится ли блок над Flow
+  // Проверка, находится ли блок над Flow - упрощенная версия
   const checkBlockOverFlow = (blockId: string, position: { x: number; y: number }) => {
     // Не проверяем для Flow блоков (Flow не может быть внутри Flow)
     const currentBlock = blocks.find(b => b.id === blockId);
     if (!currentBlock || currentBlock.type === 'Flow') return null;
 
+    // Проверяем каждый Flow блок
     for (const flowBlock of blocks) {
       if (flowBlock.type !== 'Flow' || flowBlock.id === blockId) continue;
 
-      const flowRect = {
-        left: flowBlock.position.x,
-        top: flowBlock.position.y,
-        right: flowBlock.position.x + (flowBlock.width || FLOW_MIN_WIDTH),
-        bottom: flowBlock.position.y + (flowBlock.height || FLOW_MIN_HEIGHT)
-      };
-
+      // Простая проверка по координатам
       if (
-          position.x >= flowRect.left &&
-          position.x <= flowRect.right &&
-          position.y >= flowRect.top &&
-          position.y <= flowRect.bottom
+          position.x >= flowBlock.position.x &&
+          position.x <= flowBlock.position.x + (flowBlock.width || FLOW_MIN_WIDTH) &&
+          position.y >= flowBlock.position.y &&
+          position.y <= flowBlock.position.y + (flowBlock.height || FLOW_MIN_HEIGHT)
       ) {
         return flowBlock.id;
       }
@@ -545,38 +558,55 @@ const FlowBuilder = () => {
     return null;
   };
 
-  // Организация блоков внутри Flow
+  // Упрощенная версия организации блоков внутри Flow
+  // Сохраняет z-index блоков внутри Flow
   const organizeBlocksInFlow = (flowId: string) => {
     const flowBlock = blocks.find(b => b.id === flowId);
     if (!flowBlock || flowBlock.type !== 'Flow') return;
 
     const childBlocks = blocks.filter(b => b.parentFlow === flowId);
+    if (childBlocks.length === 0) return;
+
+    console.log(`Организуем ${childBlocks.length} блоков внутри Flow ${flowBlock.title}`);
 
     // Сортируем блоки по вертикальной позиции
     childBlocks.sort((a, b) => a.position.y - b.position.y);
 
-    // Расставляем блоки с равными интервалами
+    // Обновляем позиции всех блоков внутри Flow
     const updatedBlocks = blocks.map(block => {
       if (block.parentFlow === flowId) {
-        const index = childBlocks.findIndex(b => b.id === block.id);
+        const index = childBlocks.indexOf(block);
+
+        // Сохраняем текущий z-index блока (если он выше 10)
+        // или назначаем новый высокий z-index
+        const zIndex = block.zIndex >= 100 ? block.zIndex : 100 + index;
+
         return {
           ...block,
           position: {
-            x: FLOW_PADDING, // Отступ от левого края Flow
-            y: FLOW_PADDING + (index * (BLOCK_HEIGHT + BLOCK_SPACING)) // Отступ от верхнего края Flow + интервал между блоками
-          }
+            x: FLOW_PADDING, // Фиксируем слева с отступом
+            y: FLOW_PADDING + (index * (BLOCK_HEIGHT + BLOCK_SPACING)) // Располагаем вертикально с интервалами
+          },
+          zIndex: zIndex // Используем сохраненный или новый z-index
+        };
+      } else if (block.id === flowId) {
+        // Устанавливаем z-index Flow всегда ниже блоков внутри него
+        return {
+          ...block,
+          zIndex: 1
         };
       }
       return block;
     });
 
+    console.log(`Обновляем позиции ${childBlocks.length} блоков в Flow ${flowBlock.title}`);
     setBlocks(updatedBlocks);
 
     // Обновляем размер Flow после упорядочивания блоков
-    setTimeout(() => updateFlowSize(flowId), 0);
+    updateFlowSize(flowId);
   };
 
-  // Перетаскивание
+  // Перетаскивание - упрощенная версия
   const handleDrag = (e: MouseEvent) => {
     if (!draggedBlock || !canvasRef.current) return;
 
@@ -593,7 +623,11 @@ const FlowBuilder = () => {
     const newY = mouseY - draggedBlock.offsetY;
 
     // Проверяем, находится ли блок над Flow
-    const flowId = checkBlockOverFlow(currentBlock.id, { x: mouseX, y: mouseY });
+    // Используем координаты центра блока для более точного определения
+    const blockCenterX = newX + 100; // Половина ширины блока (200px)
+    const blockCenterY = newY + 40;  // Половина высоты блока (80px)
+
+    const flowId = checkBlockOverFlow(currentBlock.id, { x: blockCenterX, y: blockCenterY });
 
     // Обновляем состояние подсветки Flow
     setHoveredFlow(flowId);
@@ -690,25 +724,48 @@ const FlowBuilder = () => {
     // Обновляем позиции текущего и связанных блоков
     updatedBlocks = updatedBlocks.map(block => {
       if (block.id === draggedBlock.id) {
+        // Если перетаскиваемый блок - Flow с дочерними блоками
+        if (block.type === 'Flow' && block.children && block.children.length > 0) {
+          // При перетаскивании Flow все дочерние блоки просто следуют за ним
+          // их относительная позиция внутри Flow не меняется
+          return { ...block, position: { x: newX, y: newY } };
+        }
+
         // Если блок в Flow, позиция относительно Flow
         if (block.parentFlow) {
           const parentFlow = blocks.find(b => b.id === block.parentFlow);
           if (parentFlow) {
             // Если блок вытаскивается из Flow
             if (!flowId || flowId !== block.parentFlow) {
-              // Вытаскиваем блок из Flow
+              // Важное исправление: обновляем массив children у родительского Flow
+              // Также удаляем все связанные блоки из Flow
+              const connectedIds = getConnectedBlocksBelow(block.id);
+              updatedBlocks = updatedBlocks.map(b => {
+                if (b.id === block.parentFlow) {
+                  return {
+                    ...b,
+                    children: (b.children || []).filter(childId =>
+                        childId !== block.id && !connectedIds.includes(childId)
+                    )
+                  };
+                }
+                return b;
+              });
+
+              // Извлекаем блок из Flow с абсолютной позицией
+              const absolutePosition = getAbsolutePosition(block);
               return {
                 ...block,
                 parentFlow: null,
-                position: { x: newX, y: newY }
+                position: { x: absolutePosition.x, y: absolutePosition.y }
               };
             }
 
-            // Иначе обновляем позицию внутри Flow
+            // Иначе обновляем позицию внутри Flow - оставляем только горизонтальную позицию фиксированной
             return {
               ...block,
               position: {
-                x: Math.max(FLOW_PADDING, newX - parentFlow.position.x),
+                x: FLOW_PADDING, // Фиксируем отступ слева
                 y: Math.max(FLOW_PADDING, newY - parentFlow.position.y)
               }
             };
@@ -724,6 +781,25 @@ const FlowBuilder = () => {
           // Блок внутри перетаскиваемого Flow, оставляем относительную позицию
           return block;
         } else if (block.parentFlow) {
+          // Если блок извлекается из Flow, обновляем его parentFlow на null
+          const draggedBlockParentFlow =
+              draggedBlock && blocks.find(b => b.id === draggedBlock.id)?.parentFlow;
+
+          if (block.parentFlow === draggedBlockParentFlow &&
+              (!flowId || flowId !== draggedBlockParentFlow)) {
+            // Если связанный блок находится в том же Flow, из которого извлекается текущий блок,
+            // то тоже извлекаем его (следует за главным блоком)
+            const absolutePosition = getAbsolutePosition(block);
+            return {
+              ...block,
+              parentFlow: null,
+              position: {
+                x: absolutePosition.x + deltaX,
+                y: absolutePosition.y + deltaY
+              }
+            };
+          }
+
           // Блок внутри другого Flow, обновляем его относительную позицию
           const parentFlow = blocks.find(b => b.id === block.parentFlow);
           if (parentFlow) {
@@ -866,57 +942,98 @@ const FlowBuilder = () => {
       }
     }
 
-    // Проверяем, был ли блок отпущен над Flow
+    // Полностью переписанная версия добавления блока в Flow
+// С гарантированным перетаскиванием всех связанных блоков
     if (hoveredFlow && currentBlock.type !== 'Flow') {
       const flowBlock = blocks.find(b => b.id === hoveredFlow);
       if (flowBlock) {
-        // Рассчитываем позицию внутри Flow
-        const relativeX = FLOW_PADDING; // отступ от левого края
-        const childrenInFlow = blocks.filter(b => b.parentFlow === hoveredFlow);
-        const relativeY = childrenInFlow.length > 0
-            ? Math.max(...childrenInFlow.map(b => b.position.y + BLOCK_HEIGHT)) + BLOCK_SPACING
-            : FLOW_PADDING; // Первый блок - отступ от верхнего края
+        // Получаем все связанные блоки (те, что ниже текущего)
+        const connectedBlocks = getConnectedBlocksBelow(currentBlock.id);
+        console.log(`Добавляем блок ${currentBlock.title} и ${connectedBlocks.length} связанных блоков в Flow ${flowBlock.title}`);
 
-        // Обновляем блок
+        // Сначала установим очень низкий z-index для Flow
         updatedBlocks = updatedBlocks.map(block => {
+          if (block.id === hoveredFlow) {
+            return {...block, zIndex: 1}; // Flow всегда самый нижний
+          }
+          return block;
+        });
+
+        // Затем обновляем все блоки
+        updatedBlocks = updatedBlocks.map(block => {
+          // Обрабатываем основной блок
           if (block.id === currentBlock.id) {
             return {
               ...block,
-              parentFlow: hoveredFlow,
-              position: { x: relativeX, y: relativeY },
-              zIndex: flowBlock.zIndex + 1 // Блок внутри Flow должен быть выше Flow
+              parentFlow: hoveredFlow,    // Устанавливаем родительский Flow
+              position: {                 // Задаем начальную позицию внутри Flow
+                x: FLOW_PADDING,
+                y: FLOW_PADDING
+              },
+              zIndex: 100                 // Задаем высокий z-index для блоков в Flow
             };
           }
 
-          // Обновляем Flow, добавляя блок в его children
+          // Обрабатываем все связанные блоки
+          if (connectedBlocks.includes(block.id)) {
+            // Вычисляем позицию относительно основного блока
+            const baseAbsPos = getAbsolutePosition(currentBlock);
+            const blockPos = getAbsolutePosition(block);
+
+            // Вычисляем относительное смещение
+            const relX = Math.max(FLOW_PADDING, blockPos.x - baseAbsPos.x + FLOW_PADDING);
+            const relY = Math.max(FLOW_PADDING, blockPos.y - baseAbsPos.y + FLOW_PADDING);
+
+            return {
+              ...block,
+              parentFlow: hoveredFlow,   // Перемещаем в Flow
+              position: {
+                x: relX,
+                y: relY
+              },
+              zIndex: 101 + connectedBlocks.indexOf(block.id) // Увеличиваем z-index для каждого блока
+            };
+          }
+
+          // Обрабатываем сам Flow
           if (block.id === hoveredFlow) {
+            // Получаем все блоки для добавления (основной + связанные)
+            const allBlocksToAdd = [currentBlock.id, ...connectedBlocks];
+
+            // Обновляем список дочерних блоков
             const newChildren = [...(block.children || [])];
-            if (!newChildren.includes(currentBlock.id)) {
-              newChildren.push(currentBlock.id);
+
+            // Добавляем все новые блоки в children
+            for (const blockId of allBlocksToAdd) {
+              if (!newChildren.includes(blockId)) {
+                newChildren.push(blockId);
+              }
             }
 
             return {
               ...block,
-              children: newChildren
+              children: newChildren,
+              zIndex: 1  // Flow должен быть ниже всех блоков
             };
           }
 
           return block;
         });
 
-        // Организуем блоки внутри Flow и обновляем размер Flow
+        // Воспроизводим звук
+        playConnectSound();
+
+        // Организуем блоки в Flow с более длительной задержкой
         setTimeout(() => {
           organizeBlocksInFlow(hoveredFlow);
-          updateFlowSize(hoveredFlow);
-        }, 0);
+        }, 100);
 
-        // Сбрасываем hoveredFlow
+        // Сбрасываем состояния
         setHoveredFlow(null);
         setDraggedBlock(null);
 
-        // Сохраняем обновленные блоки
+        // Применяем изменения
         setBlocks(updatedBlocks);
-
         return;
       }
     }
@@ -1214,8 +1331,10 @@ const FlowBuilder = () => {
     setHoveredFlow(null);
   };
 
-  // Начало соединения
+  // Начало соединения - восстановленная версия
   const handleConnectorClick = (blockId: string, point: 'top' | 'bottom') => {
+    console.log(`Клик по коннектору блока ${blockId}, точка ${point}`);
+
     // Разрешаем соединение для Switch и Flow
     const block = blocks.find(b => b.id === blockId);
     if (!block || (block.type !== 'Switch' && block.type !== 'Flow')) return;
@@ -1235,6 +1354,7 @@ const FlowBuilder = () => {
       if (sourceBlock && connecting.point === 'bottom' && targetBlock) {
         // Соединяем блок с выбранным блоком
         // Для соединения должно идти от нижнего коннектора к верхнему коннектору целевого блока
+        console.log(`Попытка соединить ${sourceBlock.title} с ${targetBlock.title}`);
 
         // Проверяем, что у целевого блока нет соединения сверху
         if (targetBlock.connections.top === null) {
@@ -1277,6 +1397,9 @@ const FlowBuilder = () => {
 
           // Воспроизводим звук подключения
           playConnectSound();
+          console.log(`Соединение создано между ${sourceBlock.title} и ${targetBlock.title}`);
+        } else {
+          console.log(`Блок ${targetBlock.title} уже имеет соединение сверху`);
         }
 
         setConnecting(null);
@@ -1284,6 +1407,7 @@ const FlowBuilder = () => {
     } else {
       // Начинаем новое соединение с блоком
       if (point === 'bottom') {
+        console.log(`Начинаем соединение от блока ${block.title}`);
         setConnecting({ blockId, point });
       }
     }
@@ -1453,6 +1577,26 @@ const FlowBuilder = () => {
 
   return (
       <div className="flex flex-col h-screen bg-gray-100">
+        {/* Добавляем стиль для гарантии z-index */}
+        <style>
+          {`
+            /* Гарантируем, что Flow всегда под блоками */
+            [data-block-type="Flow"] {
+              z-index: 1 !important;
+            }
+            
+            /* Гарантируем, что блоки внутри Flow всегда над Flow */
+            [data-in-flow="true"] {
+              z-index: 100 !important;
+            }
+            
+            /* При перетаскивании блока, он должен быть выше всех */
+            [data-dragging="true"] {
+              z-index: 1000 !important;
+            }
+          `}
+        </style>
+
         {/* Скрытый аудио-элемент (если нужен дополнительный контроль) */}
         <audio id="connect-sound" src="/sounds/connect-sound.mp3" preload="auto" style={{ display: 'none' }} />
 
@@ -1526,23 +1670,45 @@ const FlowBuilder = () => {
             return (
                 <div
                     key={block.id}
+                    data-block-type={block.type}
+                    data-in-flow={block.parentFlow ? "true" : "false"}
+                    data-dragging={draggedBlock?.id === block.id ? "true" : "false"}
                     className={`absolute cursor-move ${isFlow ? 'border-2 border-dashed' : ''} 
-                              ${hoveredFlow === block.id ? 'border-blue-500 bg-blue-100 bg-opacity-40' : ''}`}
+                              ${hoveredFlow === block.id ? 'border-blue-500 bg-blue-100' : ''}
+                              ${block.parentFlow ? 'shadow-md border-l-4 border-l-blue-500' : ''}`}
                     style={{
                       left: `${absolutePosition.x}px`,
                       top: `${absolutePosition.y}px`,
                       width: isFlow ? `${block.width || FLOW_MIN_WIDTH}px` : '200px',
                       height: isFlow ? `${block.height || FLOW_MIN_HEIGHT}px` : '80px',
-                      zIndex: block.zIndex,
+                      zIndex: block.type === 'Flow' ? 1 : (block.parentFlow ? 100 : block.zIndex),
                       backgroundColor: isFlow ? 'rgba(240, 248, 255, 0.5)' : undefined,
-                      transition: 'background-color 0.2s, border-color 0.2s',
-                    }}
-                    onMouseDown={(e) => {
-                      // Не начинаем перетаскивание, если клик был по кнопке удаления
-                      if ((e.target as HTMLElement).closest('button')) return;
-                      handleDragStart(e, block.id);
-                    }}
-                >
+                      transition: 'none',
+                      // Более четкая тень и граница для блоков в Flow для лучшей видимости
+                      boxShadow: block.parentFlow
+                          ? '0 0 8px rgba(59, 130, 246, 0.6), 0 0 0 2px rgba(59, 130, 246, 0.2)'
+                          : 'none',
+                      // Увеличенная прозрачность для Flow при наведении
+                  // Добавляем эффект подсветки при наведении на Flow
+                  opacity: hoveredFlow === block.id ? 'var(--flow-hover-opacity, 0.4)' : '1',
+                  }}
+                  onMouseDown={(e) => {
+                  // Не начинаем перетаскивание, если клик был по кнопке удаления
+                  if ((e.target as HTMLElement).closest('button')) return;
+                  handleDragStart(e, block.id);
+                }}
+                  >
+                  {/* Индикатор для блоков внутри Flow */}
+                  {block.parentFlow && (
+                      <>
+                        <div className="absolute top-0 right-0 bg-blue-500 text-white px-1 text-xs rounded-bl opacity-75">
+                          In Flow
+                        </div>
+                        {/* Визуальный элемент соединения с Flow */}
+                        <div className="absolute left-0 top-1/2 transform -translate-y-1/2 -translate-x-1.5 w-3 h-3 rounded-full bg-blue-500 border-2 border-white z-20"></div>
+                      </>
+                  )}
+
                   {isFlow ? (
                       // Рендерим контейнер Flow
                       <div className="w-full h-full p-2 relative">
